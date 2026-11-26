@@ -22,12 +22,16 @@ jobs:
       - name: Validate Apify connection and collect up to ten trends
         env:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           APIFY_TASK_ID: ieMxCP6iSnJo6BdNT
         shell: bash
         run: |
           python3 - <<'PY'
           import json, os, re, sys
           from pathlib import Path
+          from datetime import datetime, timezone
+          from urllib.parse import urlsplit
           from urllib.request import Request, urlopen
           from urllib.error import HTTPError, URLError
           from urllib.parse import urlencode
@@ -60,6 +64,33 @@ jobs:
               fail("Task metadata was not recognized.")
           print("Apify task access verified.")
 
+          db_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+          db_key = os.environ.get("SUPABASE_SECRET_KEY", "")
+          parsed = urlsplit(db_url)
+          if parsed.scheme != "https" or not re.fullmatch(r"[a-z0-9]+\.supabase\.co", parsed.netloc) or parsed.path or parsed.query or parsed.fragment or not db_key.startswith("sb_secret_"):
+              fail("Check SUPABASE_URL and SUPABASE_SECRET_KEY; use the project URL and modern secret key.")
+          db_base = db_url + "/rest/v1/source_videos"
+
+          def db_request(params, payload=None):
+              headers = {"apikey": db_key, "Accept": "application/json"}
+              if payload is not None:
+                  headers.update({"Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"})
+              request = Request(db_base + "?" + urlencode(params), headers=headers,
+                                data=None if payload is None else json.dumps(payload).encode("utf-8"),
+                                method="GET" if payload is None else "POST")
+              try:
+                  with urlopen(request, timeout=30) as response:
+                      body = response.read()
+                      return json.loads(body) if body else None
+              except HTTPError as error:
+                  fail("Supabase returned HTTP " + str(error.code) + ". Check API keys, Data API and newsroom schema.")
+              except (URLError, TimeoutError, ValueError):
+                  fail("Supabase request failed. No publication attempted.")
+
+          # Verify database access before incurring an Apify charge.
+          db_request({"select": "video_id", "limit": "1"})
+          print("Supabase source table access verified.")
+
           # One paid-event run only, no retries. Use the saved US task settings.
           params = urlencode({"maxTotalChargeUsd": "0.05", "timeout": 120, "format": "json"})
           rows = fetch_json(base + "/run-sync-get-dataset-items?" + params, 180)
@@ -90,6 +121,68 @@ jobs:
               published = json.load(file)
           existing = {str(item.get("id", item.get("slug", ""))) for item in published if isinstance(item, dict)}
           selected = unique[:10]
+          # Keep only relevant public video metadata, never raw account or credential fields.
+          by_id = {}
+          for video in videos:
+              identifier = video_id(video)
+              if identifier and identifier not in by_id:
+                  by_id[identifier] = video
+          prior_rows = db_request({"select": "video_id,first_seen_at,source_url,creator_handle,creator_name,caption,views,likes", "video_id": "in.(" + ",".join(selected) + ")"})
+          prior = {row["video_id"]: row for row in prior_rows}
+          now = datetime.now(timezone.utc).isoformat()
+
+          def obj(value):
+              return value if isinstance(value, dict) else {}
+
+          def string(*values):
+              return next((v.strip() for v in values if isinstance(v, str) and v.strip()), None)
+
+          def count(*values):
+              for value in values:
+                  if isinstance(value, bool):
+                      continue
+                  if isinstance(value, int) and 0 <= value <= 9223372036854775807:
+                      return value
+                  if isinstance(value, str) and re.fullmatch(r"[0-9]{1,19}", value):
+                      n = int(value)
+                      if n <= 9223372036854775807:
+                          return n
+              return None
+
+          records = []
+          for identifier in selected:
+              video = by_id[identifier]
+              author = obj(video.get("author") or video.get("authorMeta"))
+              stats = obj(video.get("stats") or video.get("statistics"))
+              old = prior.get(identifier, {})
+              handle = string(author.get("username"), author.get("uniqueId"), video.get("username"), old.get("creator_handle"))
+              handle = handle.lstrip("@") if handle else None
+              if handle and not re.fullmatch(r"[A-Za-z0-9._]{1,64}", handle):
+                  handle = None
+              creator = string(author.get("nickname"), author.get("name"), video.get("creator"), old.get("creator_name"))
+              caption = string(video.get("description"), video.get("desc"), video.get("caption"), video.get("text"), old.get("caption")) or ""
+              views = count(stats.get("views"), stats.get("playCount"), stats.get("play_count"), video.get("views"), video.get("playCount"), old.get("views"))
+              likes = count(stats.get("likes"), stats.get("diggCount"), stats.get("digg_count"), video.get("likes"), video.get("diggCount"), old.get("likes"))
+              source_url = "https://www.tiktok.com/@" + (handle or "_") + "/video/" + identifier
+              records.append({
+                  "video_id": identifier,
+                  "source_url": source_url,
+                  "creator_handle": handle,
+                  "creator_name": creator,
+                  "caption": caption,
+                  "views": views,
+                  "likes": likes,
+                  "region": "US",
+                  "first_seen_at": old.get("first_seen_at") or now,
+                  "last_seen_at": now,
+                  "raw_metadata": {"source": "apify", "task_id": task}
+              })
+          db_request({"on_conflict": "video_id"}, records)
+          confirmed = db_request({"select": "video_id", "video_id": "in.(" + ",".join(selected) + ")"})
+          if {row["video_id"] for row in confirmed} != set(selected):
+              fail("Database verification did not find every selected video.")
+          print("Supabase storage verified.")
+
           summary = [
               "### Thread & Fire — collection test",
               "",
@@ -100,7 +193,10 @@ jobs:
               "- Unique videos considered (max 10): " + str(len(selected)),
               "- Already in existing feed: " + str(sum(identifier in existing for identifier in selected)),
               "- New candidate videos: " + str(sum(identifier not in existing for identifier in selected)),
-              "- Publication: disabled; no files changed",
+              "- Stored and verified in Supabase: " + str(len(records)),
+              "- New database records: " + str(len(records) - len(prior)),
+              "- Existing database records refreshed: " + str(len(prior)),
+              "- Publication: disabled; no website files changed",
               "- Requested Apify run cost cap: $0.05",
           ]
           output = "\n".join(summary)
