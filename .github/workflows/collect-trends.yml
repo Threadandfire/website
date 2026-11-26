@@ -64,11 +64,18 @@ jobs:
               fail("Task metadata was not recognized.")
           print("Apify task access verified.")
 
-          db_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
-          db_key = os.environ.get("SUPABASE_SECRET_KEY", "")
+          db_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+          db_key = os.environ.get("SUPABASE_SECRET_KEY", "").strip()
+          if not db_url:
+              fail("SUPABASE_URL repository secret is missing or empty.")
+          if not db_key:
+              fail("SUPABASE_SECRET_KEY repository secret is missing or empty.")
+          if not db_key.startswith("sb_secret_"):
+              fail("SUPABASE_SECRET_KEY must be the modern secret key starting with sb_secret_.")
           parsed = urlsplit(db_url)
-          if parsed.scheme != "https" or not re.fullmatch(r"[a-z0-9]+\.supabase\.co", parsed.netloc) or parsed.path or parsed.query or parsed.fragment or not db_key.startswith("sb_secret_"):
-              fail("Check SUPABASE_URL and SUPABASE_SECRET_KEY; use the project URL and modern secret key.")
+          if parsed.scheme != "https" or not re.fullmatch(r"[a-z0-9]+\.supabase\.co", parsed.netloc) or parsed.path not in ("", "/rest/v1") or parsed.query or parsed.fragment:
+              fail("SUPABASE_URL must be https://<project-ref>.supabase.co or its /rest/v1 Data API URL.")
+          db_url = "https://" + parsed.netloc
           db_base = db_url + "/rest/v1/source_videos"
 
           def db_request(params, payload=None):
