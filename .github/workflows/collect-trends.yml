@@ -1,0 +1,110 @@
+name: Collect US TikTok trends (test)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thread-and-fire-trend-test
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out existing public feed
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate Apify connection and collect up to ten trends
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          APIFY_TASK_ID: ieMxCP6iSnJo6BdNT
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import urlencode
+
+          def fail(message):
+              print("ERROR: " + message)
+              sys.exit(1)
+
+          token = os.environ.get("APIFY_TOKEN", "")
+          if not token:
+              fail("APIFY_TOKEN secret is missing.")
+          task = os.environ["APIFY_TASK_ID"]
+          if not re.fullmatch(r"[A-Za-z0-9]+", task):
+              fail("Invalid task identifier.")
+          base = "https://api.apify.com/v2/actor-tasks/" + task
+          def fetch_json(url, timeout):
+              request = Request(url, headers={"Authorization": "Bearer " + token,
+                                             "Accept": "application/json"})
+              try:
+                  with urlopen(request, timeout=timeout) as result:
+                      return json.load(result)
+              except HTTPError as error:
+                  fail("Apify returned HTTP " + str(error.code) + ". Check scoped permissions, task settings, and billing.")
+              except (URLError, TimeoutError, ValueError):
+                  fail("Apify request failed or timed out. Check the Apify runs page before trying again.")
+
+          # Read-only preflight: never start a run if the task cannot be read.
+          task_data = fetch_json(base, 20)
+          if not isinstance(task_data, dict) or not isinstance(task_data.get("data"), dict):
+              fail("Task metadata was not recognized.")
+          print("Apify task access verified.")
+
+          # One paid-event run only, no retries. Use the saved US task settings.
+          params = urlencode({"maxTotalChargeUsd": "0.05", "timeout": 120, "format": "json"})
+          rows = fetch_json(base + "/run-sync-get-dataset-items?" + params, 180)
+          if not isinstance(rows, list):
+              fail("Unexpected dataset format.")
+          if not rows:
+              fail("No results returned. Inspect the task run in Apify.")
+
+          def video_id(item):
+              value = item.get("id", item.get("videoId", item.get("aweme_id", "")))
+              return str(value) if re.fullmatch(r"[0-9]{15,22}", str(value)) else None
+
+          videos = []
+          for row in rows:
+              if not isinstance(row, dict):
+                  continue
+              nested = row.get("videos")
+              if isinstance(nested, list) and nested:
+                  videos.extend(item for item in nested if isinstance(item, dict))
+              else:
+                  videos.append(row)
+          ids = [video_id(video) for video in videos]
+          ids = [identifier for identifier in ids if identifier]
+          if not ids:
+              fail("No recognized video IDs. Inspect the existing dataset in Apify.")
+          unique = list(dict.fromkeys(ids))
+          with Path("feed.json").open(encoding="utf-8") as file:
+              published = json.load(file)
+          existing = {str(item.get("id", item.get("slug", ""))) for item in published if isinstance(item, dict)}
+          selected = unique[:10]
+          summary = [
+              "### Thread & Fire — collection test",
+              "",
+              "- Task authenticated successfully",
+              "- Dataset rows: " + str(len(rows)),
+              "- Recognized video records: " + str(len(ids)),
+              "- Duplicate records in batch: " + str(len(ids) - len(unique)),
+              "- Unique videos considered (max 10): " + str(len(selected)),
+              "- Already in existing feed: " + str(sum(identifier in existing for identifier in selected)),
+              "- New candidate videos: " + str(sum(identifier not in existing for identifier in selected)),
+              "- Publication: disabled; no files changed",
+              "- Requested Apify run cost cap: $0.05",
+          ]
+          output = "\n".join(summary)
+          print(output)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as report:
+              report.write(output + "\n")
+          PY
