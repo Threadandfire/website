@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "Thread & Fire Newsroom",
-  "short_name": "T&F Newsroom",
+  "name": "Spool & Ember Newsroom",
+  "short_name": "S&E Newsroom",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
