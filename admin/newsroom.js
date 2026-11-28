@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 let dbUrl='', publicKey='', token='', refreshToken='', passkeyClient=null, drafts=[], videos=[], activeTab='review', current=null, busy=false, privateChecks='';
 const sections=['login','dashboard','editor'];
-const passkeysAvailable=()=>location.protocol==='https:'&&location.hostname==='threadndfire.com'&&typeof PublicKeyCredential!=='undefined'&&typeof window.supabase?.createClient==='function';
+const passkeysAvailable=()=>location.protocol==='https:'&&location.hostname==='spoolandember.com'&&typeof PublicKeyCredential!=='undefined'&&typeof window.supabase?.createClient==='function';
 function show(name){for(const id of sections) $(id).hidden=id!==name;$('logout').hidden=name==='login';$('passkeyRegister').hidden=name==='login'||!passkeysAvailable();$('passkeyLogin').hidden=!passkeysAvailable();window.scrollTo(0,0)}
 function el(tag,text,cls){const node=document.createElement(tag);if(text!=null)node.textContent=String(text);if(cls)node.className=cls;return node}
 function clear(id){$(id).replaceChildren()}
