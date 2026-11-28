@@ -1,4 +1,4 @@
-# Thread & Fire: first data-backed prototype
+# Spool & Ember: first data-backed prototype
 
 Contains a static site and 10 normalized TikTok trend signals from the supplied Apify export. No external TikTok video files are stored. No articles or claims have been independently verified.
 
