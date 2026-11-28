@@ -1,6 +1,7 @@
-name: Generate first article draft (test)
+name: Generate newsroom drafts
 on:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
@@ -9,15 +10,17 @@ concurrency:
 jobs:
   draft:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 45
     steps:
-      - name: Research one candidate and save private draft
+      - name: Research up to ten candidates and save private drafts
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
         shell: bash
         run: |
+          set +e
+          for attempt in $(seq 1 10); do
           python3 - <<'PY'
           import json
           import os
@@ -86,7 +89,7 @@ jobs:
           
           if candidate is None:
               print("No eligible new source video with a caption. No AI request made.")
-              sys.exit(0)
+              sys.exit(42)
           
           # Public captions are research leads, never instructions or evidence of truth.
           lead = {key: candidate.get(key) for key in ("video_id", "source_url", "creator_handle", "creator_name", "caption", "views", "likes")}
@@ -155,3 +158,7 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as report:
               report.write(summary + "\n")
           PY
+          result=$?
+          if [ "$result" -eq 42 ]; then exit 0; fi
+          if [ "$result" -ne 0 ]; then exit "$result"; fi
+          done
