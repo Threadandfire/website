@@ -1,7 +1,10 @@
-name: Collect US TikTok trends (test)
+name: Collect US TikTok trends and draft newsroom articles
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 13 * * *'
+    - cron: '0 20 * * *'
 
 permissions:
   contents: read
@@ -14,12 +17,27 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      active: ${{ steps.window.outputs.active }}
     steps:
+      - name: Check seven-day trial window
+        id: window
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          today=$(TZ=America/New_York date +%F)
+          if [[ "$EVENT_NAME" != schedule || ( "$today" > 2026-11-27 && "$today" < 2026-12-05 ) ]]; then
+            echo 'active=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'active=false' >> "$GITHUB_OUTPUT"
+          fi
       - name: Check out existing public feed
+        if: steps.window.outputs.active == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
       - name: Validate Apify connection and collect up to ten trends
+        if: steps.window.outputs.active == 'true'
         env:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -211,3 +229,8 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as report:
               report.write(output + "\n")
           PY
+  draft:
+    needs: collect
+    if: needs.collect.outputs.active == 'true'
+    uses: ./.github/workflows/generate-draft.yml
+    secrets: inherit
