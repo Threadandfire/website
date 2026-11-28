@@ -18,7 +18,7 @@ function pending(d){return d.status==='in_review'||d.status==='draft'}
 function metric(value,label){const n=el('div',null,'metric');n.append(el('strong',value),el('span',label));return n}
 async function load(){const [d,v]=await Promise.all([query('article_drafts',{select:'id,story_id,revision,headline,excerpt,status,created_at',order:'created_at.desc',limit:'100'}),query('source_videos',{select:'video_id,caption,creator_name,creator_handle,source_url,views,likes,last_seen_at',order:'last_seen_at.desc',limit:'100'})]);drafts=d;videos=v;clear('metrics');$('metrics').append(metric(drafts.filter(pending).length,'Awaiting review'),metric(drafts.filter(x=>x.status==='approved').length,'Approved'),metric(videos.length,'Recent trend leads'));$('asof').textContent='Latest 100 drafts and trends · refreshed '+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});render()}
 function render(){clear('items');$('notice').textContent='';const names={review:'Awaiting review',trends:'Trend monitor',approved:'Approved articles',published:'Published articles',rejected:'Rejected articles',analytics:'Readership analytics'};$('sectionTitle').textContent=names[activeTab];for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b.dataset.tab===activeTab);
-if(activeTab==='analytics'){$('items').append(el('div','Article views and reading activity will appear here after site analytics are connected. TikTok views are not website readership.','card'));return}
+if(activeTab==='analytics'){renderAnalytics();return}
 if(activeTab==='trends'){for(const v of videos){const card=el('div',null,'card');card.append(el('div','TIKTOK TREND','badge'),el('h3',v.creator_name||v.creator_handle||'Trend lead'),el('p',v.caption||'No caption available'),el('p',(v.views==null?'Unknown':Number(v.views).toLocaleString())+' source views'));const a=link(v.source_url,'Open original video ↗');if(a)card.append(a);$('items').append(card)}}
 else{const list=drafts.filter(x=>activeTab==='review'?pending(x):x.status===activeTab);for(const d of list){const card=el('button',null,'card');card.type='button';card.append(el('span',d.status.replace('_',' '),'badge'),el('h3',d.headline),el('p',d.excerpt),el('time',date(d.created_at)));card.addEventListener('click',()=>openDraft(d.id));$('items').append(card)}}
 if(!$('items').children.length)$('items').append(el('p','Nothing in this section yet.','card'))}
@@ -37,4 +37,32 @@ $('refresh').addEventListener('click',async()=>{if(busy)return;busy=true;const b
 function getPasskeyClient(){if(!passkeysAvailable())throw Error('Passkeys require the secure custom domain and a compatible device.');config();if(!passkeyClient)passkeyClient=window.supabase.createClient(dbUrl,publicKey,{auth:{experimental:{passkey:true},persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});return passkeyClient}
 $('passkeyLogin').addEventListener('click',async()=>{if(busy)return;busy=true;const b=$('passkeyLogin');b.disabled=true;$('loginMessage').textContent='Waiting for your passkey…';try{const client=getPasskeyClient();const {data,error}=await client.auth.signInWithPasskey();if(error)throw Error(error.message);token=data.session?.access_token||'';refreshToken=data.session?.refresh_token||'';if(!token||await rpc('newsroom_is_editor')!==true)throw Error('This account is not authorized as an editor.');await load();$('loginMessage').textContent='';show('dashboard')}catch(e){reset();$('loginMessage').textContent='Passkey sign-in failed: '+e.message+' You can still use your password.'}finally{busy=false;b.disabled=false}});
 $('passkeyRegister').addEventListener('click',async()=>{if(busy||!token)return;busy=true;const button=$('passkeyRegister');button.disabled=true;try{const client=getPasskeyClient();if(!refreshToken)throw Error('Sign out and sign in with your password first.');const session=await client.auth.setSession({access_token:token,refresh_token:refreshToken});if(session.error)throw Error(session.error.message);token=session.data.session?.access_token||token;refreshToken=session.data.session?.refresh_token||refreshToken;const {error}=await client.auth.registerPasskey();if(error)throw Error(error.message);alert('Passkey saved. Next time, choose Sign in with Face ID / passkey.')}catch(e){alert('Passkey setup failed: '+e.message)}finally{busy=false;button.disabled=false}});
+
+let analyticsDays=30, analyticsRequest=0;
+async function renderAnalytics(){
+ const id=++analyticsRequest, session=token, root=$('items');
+ const controls=el('div',null,'card'), select=el('select');
+ for(const n of [7,30,90]){const o=el('option','Last '+n+' days');o.value=n;select.append(o)}
+ select.value=analyticsDays;select.addEventListener('change',()=>{analyticsDays=Number(select.value);render()});
+ controls.append(el('h3','Website readership'),select,el('p','Google Analytics reporting may be delayed by 24–48 hours.'));
+ const output=el('div',null,'card');output.append(el('p','Loading readership…'));root.append(controls,output);
+ try{
+ const d=await req('/functions/v1/newsroom-analytics','POST',{days:analyticsDays});
+ if(id!==analyticsRequest||session!==token||activeTab!=='analytics'||!output.isConnected)return;
+ output.replaceChildren();
+ const vals=d.overview?.rows?.[0]?.metricValues||[];
+ const num=v=>Number(v||0).toLocaleString();
+ const grid=el('div');grid.style.cssText='display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px';
+ [ ['Page views',num(vals[0]?.value)],['Unique visitors',num(vals[1]?.value)],['Sessions',num(vals[2]?.value)],['Engagement rate',(Number(vals[3]?.value||0)*100).toFixed(1)+'%'],['Avg. session',Math.round(Number(vals[4]?.value||0))+' sec'] ].forEach(([label,value])=>grid.append(metric(value,label)));
+ output.append(grid);
+ function section(title,rows,format){const c=el('div',null,'card');c.append(el('h3',title));if(!rows?.length)c.append(el('p','No reported data yet.'));else for(const row of rows)c.append(format(row));root.append(c)}
+ const daily=d.daily?.rows||[], max=Math.max(1,...daily.map(r=>Number(r.metricValues[0].value)));
+ section('Daily page views',daily,r=>{const day=r.dimensionValues[0].value;const n=Number(r.metricValues[0].value);const line=el('div');line.append(el('p',day.slice(4,6)+'/'+day.slice(6)+' · '+num(n)+' views'));const bar=el('div');bar.style.cssText='height:8px;border-radius:4px;background:#b77946;width:'+100*n/max+'%';line.append(bar);return line});
+ section('Article views',d.articles?.rows,r=>{const p=el('p',r.dimensionValues[0].value+' · '+num(r.metricValues[0].value)+' views');const a=link(r.dimensionValues[1].value,'Open article');if(a)p.append(document.createTextNode(' · '),a);return p});
+ section('Traffic sources',d.sources?.rows,r=>el('p',r.dimensionValues[0].value+' · '+num(r.metricValues[0].value)+' sessions'));
+ section('Devices',d.devices?.rows,r=>el('p',r.dimensionValues[0].value+' · '+num(r.metricValues[0].value)+' visitors'));
+ output.append(el('p','Retrieved '+new Date(d.updatedAt).toLocaleString()));
+ }catch(e){if(output.isConnected&&session===token)output.replaceChildren(el('p','Analytics unavailable: '+e.message));}
+}
+
 show('login');
