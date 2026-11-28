@@ -209,7 +209,7 @@ jobs:
           print("Supabase storage verified.")
 
           summary = [
-              "### Thread & Fire — collection test",
+              "### Spool & Ember — collection test",
               "",
               "- Task authenticated successfully",
               "- Dataset rows: " + str(len(rows)),
